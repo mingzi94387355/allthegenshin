@@ -18,10 +18,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <ol>
  *   <li><b>游戏启动阶段</b>：Windows 环境下在注册表里查找原神路径并缓存（{@link #lookupGenshinDuringStartup()}）。</li>
  *   <li><b>游戏启动完成后</b>：用 for 循环遍历配置文件里的 {@code crash_mod} 列表，逐个检查是否被加载。</li>
- *   <li>命中任意一个 -> 游戏崩溃，然后按平台/原神是否存在决定打开哪个东西。</li>
+ *   <li>命中任意一个 -&gt; 抛出报错 "Never gonna give you up..."，把报错显示在屏幕上（<b>游戏不关闭</b>），
+ *       然后在后台启动原神 / 打开下载页 / 打开云原神。</li>
  * </ol>
+ *
+ * <p>注意：这里刻意<b>不用</b> {@code Minecraft.crash()}，也不把异常裸抛给原版 ——
+ * 那两条路最后都会 {@code System.exit} 把游戏关掉，原神还没来得及启动，窗口就先没了。
+ * allcrash 那种"直接抛异常"在 1.20.1 里也是被 {@code Minecraft.run()} 接住后走 {@code crash()} 退出，
+ * 所以想要"不关游戏"，只能自己写报告、自己显示报错界面。</p>
  */
 public final class GenshinTakeover {
+
+    /** 崩溃报错台词（参考 allcrash-forge）。 */
+    public static final String CRASH_MESSAGE = "Never gonna give you up...";
 
     private static final Logger LOGGER = LogUtils.getLogger();
 
@@ -82,7 +91,7 @@ public final class GenshinTakeover {
     // 第二步：启动完成后检测 crash_mod
     // ------------------------------------------------------------------
 
-    /** 游戏启动完成后调用。检测到 crash_mod 列表里的模组就崩溃 + 原神，启动！ */
+    /** 游戏启动完成后调用。检测到 crash_mod 列表里的模组就报错 + 原神，启动！ */
     public static void checkAndCrash() {
         if (!ATGConfig.enabled()) {
             LOGGER.info("[All the Genshin] 模组已被配置禁用（enable = false）");
@@ -109,54 +118,63 @@ public final class GenshinTakeover {
 
         LOGGER.error("================================================");
         LOGGER.error("[All the Genshin] 检测到 crash_mod 列表中的模组: {}", hits);
-        LOGGER.error("[All the Genshin] 游戏即将崩溃，然后……原神，启动！");
+        LOGGER.error("[All the Genshin] {}", CRASH_MESSAGE);
         LOGGER.error("================================================");
 
-        // Minecraft.crash() 会直接 System.exit，之后的代码不会再执行，
-        // 所以“崩溃之后要做的事”必须在触发崩溃之前做完。
-        if (ATGConfig.reactEnabled()) {
-            try {
-                react();
-            } catch (Throwable t) {
-                LOGGER.error("[All the Genshin] 打开原神/浏览器时出错", t);
+        // 抛出报错：Never gonna give you up...
+        RuntimeException error = new GenshinCrashException(
+                CRASH_MESSAGE + " （检测到 crash_mod 列表中的模组：" + String.join(", ", hits) + "）");
+        CrashReport report = CrashReport.forThrowable(error, "All the Genshin");
+
+        if (FMLEnvironment.dist.isClient()) {
+            // 客户端：报错显示在屏幕上，游戏保持运行（不调用 Minecraft.crash）
+            ClientCrashPresenter.present(report, hits);
+            // 然后：原神，启动！丢到后台线程，免得卡住界面
+            if (ATGConfig.reactEnabled()) {
+                runAsync("All the Genshin - react", GenshinTakeover::launchGenshinNow);
+            } else {
+                LOGGER.info("[All the Genshin] react_enable = false，只报错，不做任何动作");
             }
-        } else {
-            LOGGER.info("[All the Genshin] react_enable = false，只崩溃，不做任何动作");
-        }
-
-        crashTheGame(hits);
-    }
-
-    /** 崩溃之后该打开什么。 */
-    private static void react() {
-        if (!GenshinLocator.isWindows()) {
-            // 不是 Windows：云原神，走你
-            LOGGER.info("[All the Genshin] 非 Windows 环境 -> 打开云原神");
-            GenshinActions.openBrowser(GenshinLocator.CLOUD_URL);
             return;
         }
 
-        Optional<Path> exe = genshin();
-        if (exe.isPresent()) {
-            GenshinActions.launchGenshin(exe.get());
-        } else {
-            LOGGER.info("[All the Genshin] 没找到原神安装路径 -> 打开原神下载页");
-            GenshinActions.openBrowser(GenshinLocator.DOWNLOAD_URL);
+        // 专用服务端没有界面可以显示报错，只能老实崩掉
+        LOGGER.error("{}", report.getFriendlyReport());
+        if (ATGConfig.reactEnabled()) {
+            launchGenshinNow();
+        }
+        throw error;
+    }
+
+    /**
+     * 该打开什么：非 Windows 打开云原神；Windows 装了原神就启动原神，
+     * 没装原神就打开官方下载页。
+     */
+    public static void launchGenshinNow() {
+        try {
+            if (!GenshinLocator.isWindows()) {
+                LOGGER.info("[All the Genshin] 非 Windows 环境 -> 打开云原神");
+                GenshinActions.openBrowser(GenshinLocator.CLOUD_URL);
+                return;
+            }
+
+            Optional<Path> exe = genshin();
+            if (exe.isPresent()) {
+                GenshinActions.launchGenshin(exe.get());
+            } else {
+                LOGGER.info("[All the Genshin] 没找到原神安装路径 -> 打开原神下载页");
+                GenshinActions.openBrowser(GenshinLocator.DOWNLOAD_URL);
+            }
+        } catch (Throwable t) {
+            LOGGER.error("[All the Genshin] 打开原神/浏览器时出错", t);
         }
     }
 
-    /** 真正把游戏搞崩（会写出 crash-reports 里的崩溃报告）。 */
-    private static void crashTheGame(List<String> hits) {
-        String message = "[All the Genshin] 检测到 crash_mod 列表中的模组：" + String.join(", ", hits)
-                + "\n原神，启动！";
-        CrashReport report = CrashReport.forThrowable(new GenshinCrashException(message), "All the Genshin");
-
-        if (FMLEnvironment.dist.isClient()) {
-            // 客户端：走原版的崩溃流程（写 crash-reports 并退出游戏）
-            ClientCrasher.crash(report);
-        }
-        // 兜底：不管上面那步做了什么，这里再抛一次，保证游戏一定会崩
-        throw new GenshinCrashException(message);
+    /** 丢到后台线程去跑，别卡住游戏主线程。 */
+    public static void runAsync(String name, Runnable task) {
+        Thread thread = new Thread(task, name);
+        thread.setDaemon(true);
+        thread.start();
     }
 
     /** 崩溃用的异常，方便在崩溃报告里一眼认出来。 */

@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import java.awt.Desktop;
 import java.io.File;
 import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
@@ -62,12 +63,21 @@ public final class GenshinActions {
         return spawn(List.of("xdg-open", url));
     }
 
-    /** 启动原神本体 / 启动器。 */
+    /**
+     * 启动原神本体 / 启动器。
+     *
+     * <p>注意：原神的可执行文件带 {@code requireAdministrator} 清单，用普通权限
+     * {@code CreateProcess} 直接拉会失败（{@code error=740 请求的操作需要提升}）。
+     * 所以直接启动失败时，改走 {@code cmd /c start}（内部走 ShellExecuteEx，
+     * 权限不够会自动弹 UAC 提权窗口），再不行就退而求其次开启动器。</p>
+     */
     public static boolean launchGenshin(Path exe) {
+        Path absolute = exe.toAbsolutePath();
+        File directory = absolute.getParent() != null ? absolute.getParent().toFile() : null;
+
+        // 1) 直接启动：Minecraft 自己是管理员运行时最干脆
         try {
-            Path absolute = exe.toAbsolutePath();
             ProcessBuilder builder = new ProcessBuilder(absolute.toString());
-            File directory = absolute.getParent() != null ? absolute.getParent().toFile() : null;
             if (directory != null && directory.isDirectory()) {
                 // 原神需要在自己目录下启动
                 builder.directory(directory);
@@ -78,14 +88,51 @@ public final class GenshinActions {
             LOGGER.info("[All the Genshin] 原神，启动！ {} (pid={})", absolute, process.pid());
             return true;
         } catch (Throwable t) {
-            LOGGER.error("[All the Genshin] 启动原神失败: {}", t.toString());
-            return false;
+            LOGGER.info("[All the Genshin] 直接启动失败（{}），改用 shell 启动（会弹 UAC 提权窗口）", t.getMessage());
         }
+
+        // 2) 交给 shell：start 走 ShellExecuteEx，能触发 UAC 提权
+        if (spawn(List.of("cmd.exe", "/c", "start", "", absolute.toString()), directory)) {
+            LOGGER.info("[All the Genshin] 原神，启动！（已通过 shell 拉起，请在 UAC 窗口点“是”）");
+            return true;
+        }
+
+        // 3) 最后的兜底：启动器
+        Path launcher = findLauncherNear(absolute);
+        if (launcher != null && spawn(List.of(launcher.toAbsolutePath().toString()), launcher.getParent().toFile())) {
+            LOGGER.info("[All the Genshin] 本体起不来，改为启动启动器 {}", launcher);
+            return true;
+        }
+
+        LOGGER.error("[All the Genshin] 原神怎么都拉不起来，麻烦手动打开一下吧");
+        return false;
+    }
+
+    /** 从游戏本体所在目录往上找启动器（米哈游启动器目录结构：<根>\launcher.exe + <根>\games\Genshin Impact Game\）。 */
+    private static Path findLauncherNear(Path exe) {
+        Path directory = exe.getParent();
+        for (int level = 0; level < 3 && directory != null; level++) {
+            for (String name : new String[]{"launcher.exe", "Genshin Impact Launcher.exe"}) {
+                Path candidate = directory.resolve(name);
+                if (Files.isRegularFile(candidate)) {
+                    return candidate;
+                }
+            }
+            directory = directory.getParent();
+        }
+        return null;
     }
 
     private static boolean spawn(List<String> command) {
+        return spawn(command, null);
+    }
+
+    private static boolean spawn(List<String> command, File directory) {
         try {
             ProcessBuilder builder = new ProcessBuilder(command);
+            if (directory != null && directory.isDirectory()) {
+                builder.directory(directory);
+            }
             builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
             builder.redirectError(ProcessBuilder.Redirect.DISCARD);
             builder.start();
