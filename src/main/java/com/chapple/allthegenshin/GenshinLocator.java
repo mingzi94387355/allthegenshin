@@ -7,10 +7,12 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -60,6 +62,17 @@ public final class GenshinLocator {
     /** 第一层：米哈游启动器自己的键（现在最主流的安装方式）。 */
     private static final String[] LAUNCHER_KEYS = {
             "HKCU\\Software\\miHoYo\\HYP",
+    };
+
+    /** 启动器下面“每个游戏一个键”的那一层，用来兜底推导 --game=xxx。 */
+    private static final String HYP_GAMES_KEY = "HKCU\\Software\\miHoYo\\HYP\\1_1";
+
+    /** 什么快捷方式都读不出来时用的默认参数（国服原神）。 */
+    public static final String DEFAULT_GAME_ARGUMENT = "--game=hk4e_cn";
+
+    /** 桌面 / 开始菜单里“原神”快捷方式可能叫的名字。 */
+    private static final String[] SHORTCUT_NAMES = {
+            "原神.lnk", "Genshin Impact.lnk", "米哈游启动器.lnk",
     };
 
     /** 第二层：卸载信息 / 机器级安装信息，这些键里都是小字段，可以整份列出来。 */
@@ -727,6 +740,205 @@ public final class GenshinLocator {
             }
         }
         return lowerName.endsWith(".exe") && lowerName.contains("launcher");
+    }
+
+    /** 这个路径是不是米哈游启动器（而不是游戏本体）。 */
+    public static boolean isLauncher(Path path) {
+        return path != null && path.getFileName() != null && isLauncherExe(fileName(path));
+    }
+
+    /** 这个路径是不是游戏本体。 */
+    public static boolean isGameExecutable(Path path) {
+        return path != null && path.getFileName() != null && isGameExe(fileName(path));
+    }
+
+    // ------------------------------------------------------------------
+    // 米哈游启动器的原神参数（参考桌面快捷方式）
+    // ------------------------------------------------------------------
+
+    /**
+     * 找出“启动米哈游启动器时该带什么参数”。
+     *
+     * <p>优先读桌面 / 开始菜单里那个“原神”快捷方式 —— 本机快捷方式就是
+     * {@code E:\Program Files\miHoYo Launcher\launcher.exe --game=hk4e_cn}；
+     * 读不到就退回注册表里 {@code HYP\1_1\<游戏>} 的游戏名，最后再用默认值。</p>
+     */
+    public static Optional<String> findGenshinLaunchArguments() {
+        if (!isWindows()) {
+            return Optional.empty();
+        }
+
+        Optional<String> fromShortcut = shortcutArguments();
+        if (fromShortcut.isPresent()) {
+            return fromShortcut;
+        }
+
+        for (String game : subKeys(HYP_GAMES_KEY)) {
+            if (game.toLowerCase(Locale.ROOT).contains("hk4e")) {
+                String argument = "--game=" + game;
+                LOGGER.info("[All the Genshin] 从注册表推出启动参数: {}", argument);
+                return Optional.of(argument);
+            }
+        }
+
+        LOGGER.info("[All the Genshin] 用默认启动参数: {}", DEFAULT_GAME_ARGUMENT);
+        return Optional.of(DEFAULT_GAME_ARGUMENT);
+    }
+
+    private static Optional<String> shortcutArguments() {
+        List<Path> shortcuts = genshinShortcuts();
+        if (shortcuts.isEmpty()) {
+            LOGGER.info("[All the Genshin] 没找到“原神”快捷方式");
+            return Optional.empty();
+        }
+        for (String[] entry : readShortcuts(shortcuts)) {
+            String target = entry[2];
+            String arguments = entry[3].trim();
+            if (target.isEmpty() || arguments.isEmpty()) {
+                continue;
+            }
+            if (!target.toLowerCase(Locale.ROOT).endsWith(".exe")) {
+                continue;
+            }
+            LOGGER.info("[All the Genshin] 从快捷方式 {} 读到启动参数: {} {}", entry[1], target, arguments);
+            return Optional.of(arguments);
+        }
+        return Optional.empty();
+    }
+
+    /** 桌面 / 开始菜单里所有和原神有关的快捷方式。 */
+    private static List<Path> genshinShortcuts() {
+        List<Path> directories = new ArrayList<>();
+        addDirectory(directories, System.getenv("USERPROFILE"), "Desktop");
+        addDirectory(directories, System.getenv("OneDrive"), "Desktop");
+        addDirectory(directories, System.getenv("OneDriveConsumer"), "Desktop");
+        addDirectory(directories, System.getenv("PUBLIC"), "Desktop");
+        addDirectory(directories, System.getenv("APPDATA"),
+                "Microsoft", "Windows", "Start Menu", "Programs");
+        addDirectory(directories, System.getenv("ProgramData"),
+                "Microsoft", "Windows", "Start Menu", "Programs");
+
+        List<Path> found = new ArrayList<>();
+        for (Path directory : directories) {
+            for (String name : SHORTCUT_NAMES) {
+                Path link = directory.resolve(name);
+                if (Files.isRegularFile(link) && !found.contains(link)) {
+                    found.add(link);
+                }
+            }
+        }
+        // 名字不固定、或者放在开始菜单子目录里的，再扫两层
+        for (Path directory : directories) {
+            try (var stream = Files.walk(directory, 2)) {
+                stream.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".lnk"))
+                        .filter(path -> looksLikeGenshinKey(path.getFileName().toString()))
+                        .sorted(Comparator.comparingInt(path -> shortcutRank(path.getFileName().toString())))
+                        .limit(5)
+                        .forEach(path -> {
+                            if (!found.contains(path)) {
+                                found.add(path);
+                            }
+                        });
+            } catch (Throwable ignored) {
+                // 目录读不了就算了
+            }
+        }
+        return found;
+    }
+
+    private static void addDirectory(List<Path> directories, String base, String... parts) {
+        if (base == null || base.isBlank()) {
+            return;
+        }
+        Path path = Paths.get(base);
+        for (String part : parts) {
+            path = path.resolve(part);
+        }
+        if (Files.isDirectory(path)) {
+            directories.add(path);
+        }
+    }
+
+    /** “原神/Genshin” 排在“米哈游启动器”前面。 */
+    private static int shortcutRank(String name) {
+        return looksLikeGenshinKey(name) && (name.contains("原神")
+                || name.toLowerCase(Locale.ROOT).contains("genshin")) ? 0 : 1;
+    }
+
+    /**
+     * 用 PowerShell 的 WScript.Shell 读快捷方式的目标和参数，结果写进临时文件再读回来
+     * （游戏进程里可能读不到子进程的管道，所以不直接读 stdout）。
+     */
+    private static List<String[]> readShortcuts(List<Path> shortcuts) {
+        Path output = null;
+        try {
+            output = Files.createTempFile("allthegenshin-lnk-", ".txt");
+
+            StringBuilder script = new StringBuilder();
+            script.append("$sh=New-Object -ComObject WScript.Shell;$o=@();foreach($p in @(");
+            for (int i = 0; i < shortcuts.size(); i++) {
+                if (i > 0) {
+                    script.append(',');
+                }
+                script.append('\'').append(quote(shortcuts.get(i).toAbsolutePath().toString())).append('\'');
+            }
+            script.append(")){if(Test-Path -LiteralPath $p){$s=$sh.CreateShortcut($p);")
+                    .append("$o+=('LNK|'+$p+'|'+$s.TargetPath+'|'+$s.Arguments+'|'+$s.WorkingDirectory)}};")
+                    .append("$enc=New-Object System.Text.UTF8Encoding($false);")
+                    .append("[IO.File]::WriteAllLines('").append(quote(output.toAbsolutePath().toString()))
+                    .append("',$o,$enc)");
+
+            List<String> command = new ArrayList<>();
+            command.add("powershell.exe");
+            command.add("-NoProfile");
+            command.add("-NonInteractive");
+            command.add("-Command");
+            command.add(script.toString());
+
+            ProcessBuilder builder = new ProcessBuilder(command);
+            builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+            builder.redirectError(ProcessBuilder.Redirect.DISCARD);
+            Process process = builder.start();
+            if (!process.waitFor(FILE_TIMEOUT_MS * 3, TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly();
+                LOGGER.warn("[All the Genshin] 读取快捷方式超时");
+                return List.of();
+            }
+
+            List<String[]> result = new ArrayList<>();
+            String text = new String(Files.readAllBytes(output), StandardCharsets.UTF_8);
+            for (String line : text.split("\\R")) {
+                String trimmed = line.strip();
+                if (trimmed.startsWith("\uFEFF")) {
+                    trimmed = trimmed.substring(1).strip();
+                }
+                if (!trimmed.startsWith("LNK|")) {
+                    continue;
+                }
+                String[] parts = trimmed.split("\\|", 5);
+                if (parts.length >= 5) {
+                    result.add(parts);
+                }
+            }
+            return result;
+        } catch (Throwable t) {
+            LOGGER.warn("[All the Genshin] 读取快捷方式失败: {}", t.toString());
+            return List.of();
+        } finally {
+            if (output != null) {
+                try {
+                    Files.deleteIfExists(output);
+                } catch (Exception ignored) {
+                    // 删不掉就留给系统清理
+                }
+            }
+        }
+    }
+
+    /** PowerShell 单引号字符串里，单引号要写两遍。 */
+    private static String quote(String value) {
+        return value.replace("'", "''");
     }
 
     private static String fileName(Path path) {

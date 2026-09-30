@@ -3,7 +3,6 @@ package com.chapple.allthegenshin;
 import com.mojang.logging.LogUtils;
 import net.minecraft.CrashReport;
 import net.minecraftforge.fml.ModList;
-import net.minecraftforge.fml.loading.FMLEnvironment;
 import org.slf4j.Logger;
 
 import java.nio.file.Path;
@@ -126,29 +125,19 @@ public final class GenshinTakeover {
                 CRASH_MESSAGE + " （检测到 crash_mod 列表中的模组：" + String.join(", ", hits) + "）");
         CrashReport report = CrashReport.forThrowable(error, "All the Genshin");
 
-        if (FMLEnvironment.dist.isClient()) {
-            // 客户端：报错显示在屏幕上，游戏保持运行（不调用 Minecraft.crash）
-            ClientCrashPresenter.present(report, hits);
-            // 然后：原神，启动！丢到后台线程，免得卡住界面
-            if (ATGConfig.reactEnabled()) {
-                runAsync("All the Genshin - react", GenshinTakeover::launchGenshinNow);
-            } else {
-                LOGGER.info("[All the Genshin] react_enable = false，只报错，不做任何动作");
-            }
-            return;
-        }
-
-        // 专用服务端没有界面可以显示报错，只能老实崩掉
-        LOGGER.error("{}", report.getFriendlyReport());
+        // 报错显示在屏幕上，游戏保持运行（这里刻意不调用 Minecraft.crash，那会直接关掉游戏）
+        ClientCrashPresenter.present(report, hits);
+        // 然后：原神，启动！丢到后台线程，免得卡住界面
         if (ATGConfig.reactEnabled()) {
-            launchGenshinNow();
+            runAsync("All the Genshin - react", GenshinTakeover::launchGenshinNow);
+        } else {
+            LOGGER.info("[All the Genshin] react_enable = false，只报错，不做任何动作");
         }
-        throw error;
     }
 
     /**
-     * 该打开什么：非 Windows 打开云原神；Windows 装了原神就启动原神，
-     * 没装原神就打开官方下载页。
+     * 该打开什么：非 Windows 打开云原神；只找到米哈游启动器就带原神参数启动它；
+     * 找到游戏本体就启动本体；什么都没找到就打开官方下载页。
      */
     public static void launchGenshinNow() {
         try {
@@ -158,12 +147,19 @@ public final class GenshinTakeover {
                 return;
             }
 
-            Optional<Path> exe = genshin();
-            if (exe.isPresent()) {
-                GenshinActions.launchGenshin(exe.get());
-            } else {
+            Optional<Path> found = genshin();
+            if (found.isEmpty()) {
                 LOGGER.info("[All the Genshin] 没找到原神安装路径 -> 打开原神下载页");
                 GenshinActions.openBrowser(GenshinLocator.DOWNLOAD_URL);
+                return;
+            }
+
+            Path path = found.get();
+            if (GenshinLocator.isLauncher(path)) {
+                // 只有启动器：带上原神的游戏参数启动它（桌面快捷方式就是 launcher.exe --game=hk4e_cn）
+                GenshinActions.launchLauncher(path);
+            } else {
+                GenshinActions.launchGenshin(path);
             }
         } catch (Throwable t) {
             LOGGER.error("[All the Genshin] 打开原神/浏览器时出错", t);
