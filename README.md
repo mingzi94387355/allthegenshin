@@ -24,6 +24,7 @@
     └─ 命中 → 抛出报错 "Never gonna give you up..."：
           ├─ 崩溃报告照样写进 crash-reports/ 并打进日志
           ├─ 报错界面弹在屏幕上，**游戏继续运行**（不会关掉）
+          ├─ 用浏览器打开 https://www.bilibili.com/video/BV1GJ411x7h7/ 放首歌
           └─ 然后是"该打开什么"：
                 ├─ 不是 Windows → 用浏览器打开 云原神
                 │     https://ys.mihoyo.com/cloud/?utm_source=default#/

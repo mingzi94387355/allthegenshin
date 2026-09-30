@@ -40,6 +40,8 @@ public final class GenshinLocator {
     /** Windows 但没装原神时打开的原神下载页。 */
     public static final String DOWNLOAD_URL =
             "https://ys-api.mihoyo.com/event/download_porter/link/ys_cn/official/pc_backup322";
+    /** 报错时顺便放的那首歌（Never gonna give you up）。 */
+    public static final String RICKROLL_URL = "https://www.bilibili.com/video/BV1GJ411x7h7/";
 
     private static final Logger LOGGER = LogUtils.getLogger();
 

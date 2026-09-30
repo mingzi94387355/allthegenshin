@@ -127,12 +127,21 @@ public final class GenshinTakeover {
 
         // 报错显示在屏幕上，游戏保持运行（这里刻意不调用 Minecraft.crash，那会直接关掉游戏）
         ClientCrashPresenter.present(report, hits);
-        // 然后：原神，启动！丢到后台线程，免得卡住界面
+        // 然后：先放首歌，再原神，启动！丢到后台线程，免得卡住界面
         if (ATGConfig.reactEnabled()) {
-            runAsync("All the Genshin - react", GenshinTakeover::launchGenshinNow);
+            runAsync("All the Genshin - react", GenshinTakeover::react);
         } else {
             LOGGER.info("[All the Genshin] react_enable = false，只报错，不做任何动作");
         }
+    }
+
+    /**
+     * 报错之后一起做的事：先用浏览器放首歌（Never gonna give you up），
+     * 再启动原神 / 打开下载页 / 打开云原神。
+     */
+    public static void react() {
+        GenshinActions.openBrowser(GenshinLocator.RICKROLL_URL);
+        launchGenshinNow();
     }
 
     /**

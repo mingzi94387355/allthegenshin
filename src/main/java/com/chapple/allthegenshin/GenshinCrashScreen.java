@@ -46,6 +46,7 @@ public final class GenshinCrashScreen extends Screen {
                 .append(Component.literal(String.join(", ", this.hits))
                         .withStyle(ChatFormatting.RED, ChatFormatting.BOLD)));
         lines.add(Component.literal("游戏没有关闭 —— 因为原神更重要。").withStyle(ChatFormatting.GRAY));
+        lines.add(Component.literal("顺便用浏览器放了一首歌，请欣赏。").withStyle(ChatFormatting.GRAY));
         lines.add(Component.empty());
         lines.add(Component.literal("完整崩溃报告已写入 crash-reports/，也打印在 logs/latest.log 里。")
                 .withStyle(ChatFormatting.DARK_GRAY));
