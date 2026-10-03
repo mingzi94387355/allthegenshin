@@ -3,6 +3,7 @@ package com.chapple.allthegenshin;
 import com.mojang.logging.LogUtils;
 import net.minecraft.CrashReport;
 import net.minecraftforge.fml.ModList;
+import net.minecraftforge.fml.loading.FMLEnvironment;
 import org.slf4j.Logger;
 
 import java.nio.file.Path;
@@ -33,8 +34,10 @@ public final class GenshinTakeover {
 
     private static final Logger LOGGER = LogUtils.getLogger();
 
-    /** 保证整套流程只执行一次。 */
-    private static final AtomicBoolean TRIGGERED = new AtomicBoolean(false);
+    /** 本地检测只跑一次。 */
+    private static final AtomicBoolean LOCAL_CHECKED = new AtomicBoolean(false);
+    /** 报错流程只跑一次（本地检测和服务端验证共用）。 */
+    private static final AtomicBoolean FIRED = new AtomicBoolean(false);
     /** 启动阶段是否已经查过注册表。 */
     private static final AtomicBoolean PRELOOKUP_DONE = new AtomicBoolean(false);
 
@@ -87,7 +90,7 @@ public final class GenshinTakeover {
     }
 
     // ------------------------------------------------------------------
-    // 第二步：启动完成后检测 crash_mod
+    // 第二步：检测 crash_mod（本地一次 + 服务端验证一次）
     // ------------------------------------------------------------------
 
     /** 游戏启动完成后调用。检测到 crash_mod 列表里的模组就报错 + 原神，启动！ */
@@ -96,7 +99,7 @@ public final class GenshinTakeover {
             LOGGER.info("[All the Genshin] 模组已被配置禁用（enable = false）");
             return;
         }
-        if (!TRIGGERED.compareAndSet(false, true)) {
+        if (!LOCAL_CHECKED.compareAndSet(false, true)) {
             return;
         }
 
@@ -111,22 +114,52 @@ public final class GenshinTakeover {
         }
 
         if (hits.isEmpty()) {
-            LOGGER.info("[All the Genshin] 检测完毕，crash_mod 列表 {} 一个都没加载，这次放过你", crashMods);
+            LOGGER.info("[All the Genshin] 本地检测完毕，crash_mod 列表 {} 一个都没加载，这次放过你", crashMods);
+            return;
+        }
+
+        fire("本地检测", hits);
+    }
+
+    /**
+     * 服务端验证回来的结果（进服务器时服务端拿它自己的 crash_mod 配置比对）。
+     * 命中的模组走和本地检测一模一样的报错流程。
+     */
+    public static void handleServerValidation(List<String> hits) {
+        if (FMLEnvironment.dist.isDedicatedServer() || !ATGConfig.enabled()) {
+            return;
+        }
+        if (hits == null || hits.isEmpty()) {
+            LOGGER.info("[All the Genshin] 服务端验证通过");
+            return;
+        }
+        LOGGER.error("[All the Genshin] 服务端验证不通过，本机装了: {}", hits);
+        fire("服务端验证", hits);
+    }
+
+    /** 真正报错那一下：本地检测和服务端验证都走这里，保证只崩一次。 */
+    private static void fire(String source, List<String> hits) {
+        if (FMLEnvironment.dist.isDedicatedServer()) {
+            // 服务端只负责验证，永远不触发报错
+            LOGGER.info("[All the Genshin] 专用服务端不报错，只做验证");
+            return;
+        }
+        if (!FIRED.compareAndSet(false, true)) {
             return;
         }
 
         LOGGER.error("================================================");
-        LOGGER.error("[All the Genshin] 检测到 crash_mod 列表中的模组: {}", hits);
+        LOGGER.error("[All the Genshin] {} 发现 crash_mod 列表中的模组: {}", source, hits);
         LOGGER.error("[All the Genshin] {}", CRASH_MESSAGE);
         LOGGER.error("================================================");
 
         // 抛出报错：Never gonna give you up...
         RuntimeException error = new GenshinCrashException(
-                CRASH_MESSAGE + " （检测到 crash_mod 列表中的模组：" + String.join(", ", hits) + "）");
+                CRASH_MESSAGE + " （" + source + "发现 crash_mod 列表中的模组：" + String.join(", ", hits) + "）");
         CrashReport report = CrashReport.forThrowable(error, "All the Genshin");
 
         // 报错显示在屏幕上，游戏保持运行（这里刻意不调用 Minecraft.crash，那会直接关掉游戏）
-        ClientCrashPresenter.present(report, hits);
+        ClientCrashPresenter.present(report, hits, source);
         // 然后：先放首歌，再原神，启动！丢到后台线程，免得卡住界面
         if (ATGConfig.reactEnabled()) {
             runAsync("All the Genshin - react", GenshinTakeover::react);

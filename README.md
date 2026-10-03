@@ -1,19 +1,24 @@
 # All the Genshin（原神，启动！）
 
-一个 **纯客户端** 的 Minecraft Forge 1.20.1 模组（`mods.toml` 里 `clientSideOnly=true`，专用服务端直接忽略它）：
+一个 Minecraft Forge 1.20.1 模组 —— **客户端必装、服务端选装**（`mods.toml` 里 `displayTest="IGNORE_SERVER_VERSION"`，
+服务端不装不算红叉，客户端不装会提示）：
 
 > 在启动阶段去注册表里找原神；游戏启动完成后检查你有没有装某些"不该装"的模组；
+> 进服务器时服务端还会拿**自己的**配置再验一轮；
 > 一旦发现，**游戏里直接报错 "Never gonna give you up..."（但游戏不关闭）**，然后原神，启动！
 
 参考了 allcrash-forge 的玩法（配置文件里配一个 `crash_mod` 列表）。
+
+**服务端只负责验证，永远不会崩**（`GenshinTakeover.fire()` 里对专用服务端直接 return）。
 
 ## 完整流程
 
 ```
 游戏启动阶段 (FMLCommonSetupEvent)
-    └─ 是 Windows？ → reg query 查注册表，找出原神安装路径并缓存
-                     （HKCU\Software\miHoYo\HYP\1_1\hk4e_cn → GameInstallPath 等）
-    └─ 不是 Windows？ → 跳过
+    └─ 注册联机验证通道（allthegenshin:main）
+    └─ 是客户端 + Windows？ → reg query 查注册表，找出原神安装路径并缓存
+                              （HKCU\Software\miHoYo\HYP\1_1\hk4e_cn → GameInstallPath 等）
+    └─ 专用服务端 → 跳过找原神，只等着有人进服时验一轮
 
 游戏启动完成 (客户端进入主菜单)
     └─ for 循环遍历配置文件里的 crash_mod 列表
@@ -21,20 +26,29 @@
              if (ModList.get().isLoaded(id)) hits.add(id);
          }
     └─ 一个都没命中 → 什么也不做
-    └─ 命中 → 抛出报错 "Never gonna give you up..."：
-          ├─ 崩溃报告照样写进 crash-reports/ 并打进日志
-          ├─ 报错界面弹在屏幕上，**游戏继续运行**（不会关掉）
-          ├─ 用浏览器打开 https://www.bilibili.com/video/BV1GJ411x7h7/ 放首歌
-          └─ 然后是"该打开什么"：
-                ├─ 不是 Windows → 用浏览器打开 云原神
-                │     https://ys.mihoyo.com/cloud/?utm_source=default#/
-                └─ 是 Windows
-                      ├─ 什么都没找到 → 用浏览器打开 原神下载页
-                      │     https://ys-api.mihoyo.com/event/download_porter/link/ys_cn/official/pc_backup322
-                      ├─ 只找到米哈游启动器 → 带原神参数启动启动器
-                      │     launcher.exe --game=hk4e_cn
-                      └─ 找到游戏本体 → 启动原神（YuanShen.exe / GenshinImpact.exe）
+
+进服务器时（联机再验一轮）
+    └─ 客户端把"我加载了哪些模组"发给服务端（服务端没装这个模组就直接跳过）
+    └─ 服务端拿自己的 crash_mod 配置比对，把命中的模组回给客户端
+    └─ 客户端收到 → 走和本地检测完全一样的流程
+
+任意一轮命中 → 抛出报错 "Never gonna give you up..."：
+      ├─ 崩溃报告照样写进 crash-reports/ 并打进日志
+      ├─ 报错界面弹在屏幕上，**游戏继续运行**（不会关掉）
+      ├─ 用浏览器打开 https://www.bilibili.com/video/BV1GJ411x7h7/ 放首歌
+      └─ 然后是"该打开什么"：
+            ├─ 不是 Windows → 用浏览器打开 云原神
+            │     https://ys.mihoyo.com/cloud/?utm_source=default#/
+            └─ 是 Windows
+                  ├─ 什么都没找到 → 用浏览器打开 原神下载页
+                  │     https://ys-api.mihoyo.com/event/download_porter/link/ys_cn/official/pc_backup322
+                  ├─ 只找到米哈游启动器 → 带原神参数启动启动器
+                  │     launcher.exe --game=hk4e_cn
+                  └─ 找到游戏本体 → 启动原神（YuanShen.exe / GenshinImpact.exe）
 ```
+
+本地检测和服务端验证共用同一个 `fire()`，`AtomicBoolean` 保证只报错一次
+（比如单人世界里本地已经命中，局域网/服务端再回一次也不会弹第二个界面）。
 
 ### 为什么不用 `Minecraft.crash()` / 直接抛异常
 
@@ -127,15 +141,23 @@ crash_mod = ["examplemod", "jei", "allcrash"]
 ./gradlew runClient
 ```
 
+想试联机验证，再开一个服务端（记得 `run/server.properties` 里 `online-mode=false`，不然开发客户端进不去）：
+
+```bash
+./gradlew runServer
+```
+
 ## 代码结构
 
 | 文件 | 作用 |
 | --- | --- |
-| `allthegenshin.java` | 主类：注册配置、启动阶段查注册表（纯客户端，服务端不加载） |
+| `allthegenshin.java` | 主类：注册配置、注册联机通道、客户端启动阶段查注册表（服务端跳过） |
 | `ATGConfig.java` | 配置文件（`crash_mod` 列表等） |
 | `GenshinLocator.java` | 注册表 / 常见目录查找原神，路径解析，读“原神”快捷方式的启动参数 |
-| `GenshinTakeover.java` | for 循环检测 `crash_mod` → 抛出报错 → 启动原神/浏览器 |
+| `GenshinTakeover.java` | 本地 for 循环检测 + 服务端验证结果 → 抛出报错 → 启动原神/浏览器 |
 | `GenshinActions.java` | 用浏览器打开网址、启动原神本体 / 启动器（含 UAC 提权兜底） |
+| `ATGNetwork.java` | 联机验证通道：客户端发模组列表、服务端比对并回结果 |
+| `ClientNetworkHook.java` | 客户端进服时把模组列表发出去 |
 | `ClientStartupWatcher.java` | 客户端"启动完成"判定（进主菜单后触发检测） |
 | `ClientCrashPresenter.java` | 写 crash-reports、打日志、显示报错界面（**不关游戏**） |
 | `GenshinCrashScreen.java` | "Never gonna give you up..." 报错界面本体 |

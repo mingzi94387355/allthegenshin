@@ -30,12 +30,12 @@ final class ClientCrashPresenter {
     }
 
     /** 落盘崩溃报告 + 打日志 + 把报错摆到屏幕上（游戏继续运行）。 */
-    static void present(CrashReport report, List<String> hits) {
+    static void present(CrashReport report, List<String> hits, String source) {
         Minecraft minecraft = Minecraft.getInstance();
         saveReport(minecraft, report);
         LOGGER.error("[All the Genshin] 崩溃报告如下：\n{}", report.getFriendlyReport());
 
-        GenshinCrashScreen screen = new GenshinCrashScreen(hits);
+        GenshinCrashScreen screen = new GenshinCrashScreen(hits, source);
         if (minecraft.isSameThread()) {
             minecraft.setScreen(screen);
         } else {

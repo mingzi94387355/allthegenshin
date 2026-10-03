@@ -7,19 +7,21 @@ import net.minecraftforge.fml.config.ModConfig;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.fml.event.lifecycle.FMLLoadCompleteEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import net.minecraftforge.fml.loading.FMLEnvironment;
 import org.slf4j.Logger;
 
 /**
- * All the Genshin（纯客户端模组）。
- *
- * <p>mods.toml 里设了 {@code clientSideOnly=true}，所以专用服务端根本不加载它。</p>
+ * All the Genshin。
  *
  * <p>启动流程：</p>
  * <ol>
- *   <li>游戏启动阶段（{@link FMLCommonSetupEvent}）：Windows 环境去注册表里查找原神安装路径。</li>
+ *   <li>游戏启动阶段（{@link FMLCommonSetupEvent}）：注册联机验证通道；客户端另外还会去注册表里
+ *       查找原神安装路径（专用服务端跳过这一步）。</li>
  *   <li>游戏启动完成后（{@link ClientStartupWatcher}）：for 循环遍历配置文件里的
  *       {@code crash_mod} 列表，检测这些模组是否被加载。</li>
- *   <li>命中 -> 报错 "Never gonna give you up..."（游戏不关闭）-> 启动原神。</li>
+ *   <li>进服务器时（{@link ClientNetworkHook} + {@link ATGNetwork}）：客户端把模组列表发给服务端，
+ *       服务端拿自己的 {@code crash_mod} 再验一轮，把命中的模组回给客户端。</li>
+ *   <li>任意一轮命中 -&gt; 报错 "Never gonna give you up..."（游戏不关闭）-&gt; 放歌 + 启动原神。</li>
  * </ol>
  */
 @Mod(allthegenshin.MOD_ID)
@@ -38,8 +40,14 @@ public class allthegenshin {
         modEventBus.addListener(this::loadComplete);
     }
 
-    /** 游戏启动阶段：是 Windows 环境就在注册表里查找原神路径。 */
+    /** 游戏启动阶段：注册联机验证包；客户端顺便找一下原神在哪。 */
     private void commonSetup(final FMLCommonSetupEvent event) {
+        event.enqueueWork(ATGNetwork::register);
+        if (FMLEnvironment.dist.isDedicatedServer()) {
+            // 专用服务端只负责"有人进服时验一轮"，不用找原神，也不会去启动什么
+            LOGGER.info("[All the Genshin] 专用服务端：跳过原神路径查找，只做联机验证");
+            return;
+        }
         GenshinTakeover.lookupGenshinDuringStartup();
     }
 

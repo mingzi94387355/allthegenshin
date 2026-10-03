@@ -28,11 +28,13 @@ public final class GenshinCrashScreen extends Screen {
             Component.literal("Never gonna give you up...").withStyle(ChatFormatting.RED, ChatFormatting.BOLD);
 
     private final List<String> hits;
+    private final String source;
     private MultiLineLabel body;
 
-    public GenshinCrashScreen(List<String> hits) {
+    public GenshinCrashScreen(List<String> hits, String source) {
         super(TITLE);
         this.hits = new ArrayList<>(hits);
+        this.source = source;
     }
 
     @Override
@@ -42,7 +44,7 @@ public final class GenshinCrashScreen extends Screen {
         lines.add(Component.literal("Never gonna let you down,").withStyle(ChatFormatting.GOLD));
         lines.add(Component.literal("Never gonna run around and desert you...").withStyle(ChatFormatting.GOLD));
         lines.add(Component.empty());
-        lines.add(Component.literal("检测到 crash_mod 列表中的模组：").withStyle(ChatFormatting.WHITE)
+        lines.add(Component.literal(this.source + "发现 crash_mod 列表中的模组：").withStyle(ChatFormatting.WHITE)
                 .append(Component.literal(String.join(", ", this.hits))
                         .withStyle(ChatFormatting.RED, ChatFormatting.BOLD)));
         lines.add(Component.literal("游戏没有关闭 —— 因为原神更重要。").withStyle(ChatFormatting.GRAY));
